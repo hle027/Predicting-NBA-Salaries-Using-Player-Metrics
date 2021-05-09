@@ -24,6 +24,6 @@ The initial dataset (which we appended with subsequent seasons) was found on kag
 Salary data was also downloaded from ESPN’s historical NBA salary database.
 
 ## Authors:
-Chaaru Dingankar
-Hoa Le
+Chaaru Dingankar   
+Hoa Le   
 Sreyashi Das
