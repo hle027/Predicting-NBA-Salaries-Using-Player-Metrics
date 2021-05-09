@@ -14,3 +14,16 @@ There’s a few important things to note about this dataset. First, a specific p
 Second, this dataset represents multiple seasons of NBA players’ data - player data from the last 4 seasons are used: 2016-17, 2017-18, 2018-19, and 2019-20. The last season was cut short because of the pandemic, but the majority of the games were played - so the predictor statistics are still available for players.
 
 Third, it’s possible that salary is a lagging indicator of a player’s skill level. If the player’s skill level is accurately represented by the metrics we have chosen as our predictor variables, it’s possible that as a player ages and declines in quality, they are still overpaid to an extent, because their contracts were written earlier, when they were younger and had better statistics. Our report doesn’t explore this possiblity of linking a player’s statistics in a given season to their salary in a later season, but it’s a common sense possiblity that could be a confounding factor in our search for a good model.
+
+# Appendix
+## Citations:
+All data for this project was downloaded from basketball-reference.
+
+The initial dataset (which we appended with subsequent seasons) was found on kaggle, and served as the inspiration for the project. It was appended with additional data points from the above site to bring the total number of observations higher.
+
+Salary data was also downloaded from ESPN’s historical NBA salary database.
+
+## Authors:
+Chaaru Dingankar
+Hoa Le
+Sreyashi Das
