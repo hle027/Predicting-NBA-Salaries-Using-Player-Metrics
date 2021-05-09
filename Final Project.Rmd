@@ -1,0 +1,311 @@
+---
+title: "Predicting NBA Salaries Using Player Metrics"
+output:
+  pdf_document: default
+  html_document: 
+    highlight: espresso
+    theme: readable
+    toc: yes
+urlcolor: cyan
+---
+
+```{r setup, echo = FALSE, message = FALSE, warning = FALSE}
+options(scipen = 100, digits = 4, width = 80, fig.align = "center")
+```
+
+# Introduction
+
+## Goals
+
+In this project, we are attempting to accurately predict an NBA basketball player's salary as a function of several metrics gathered about their basketball gameplay. We want to answer the following question: given a player's performance over a set of metrics (commonly referred to as "Advanced Metrics", since they are computed with a level of analysis beyond the most basic metrics collected about a player), what is their salary likely to be?
+
+## Background
+
+The National Basketball Association (NBA) is the largest and most competitive men's professional basketball league in North America. It is comprised of 30 teams in the United States and Canada, and at any time, each team has a roster of about 15-20 players. The NBA plays basketball in a cycle of seasons that starts in October and ends in April of each year - during this time, each team plays 82 games. Players on these teams are paid salaries on a per-season basis. These salaries can range from thousands of US dollars to tens of millions of US dollars, and they are governed and limited by a complicated set of rules that limits teams to paying players a certain amount based on various parameters about the player and the team. However, at the core, the assumption is that better players are paid more. This report is trying to figure out if there is a relationship between a player's skill at the game of basketball, as measured by various metrics, and the amount they are paid.
+
+There's lots of variables in the data, but the meat of it is 19 "advanced statistics". These range from things like the percentage of times the player was able to assist a teammate in scoring (`AST%`) to the rate at which the player got involved with attempting to score (`USG%`) to an attempted comprehensive metric about the total value a player provides a team (`VORP`). In addition to these advanced stats, there are more mundane variables, like the team a player is on, the position/role they typically serve, and their age. The response variable will be `Salary`, which is the amount the player was paid that year in US dollars.
+
+There's a few important things to note about this dataset. First, a specific player can play for more than one team per season - often, teams will "trade" players (swap them for some competitive advantage) in the middle of a season. 
+
+Second, this dataset represents multiple seasons of NBA players' data - player data from the last 4 seasons are used: 2016-17, 2017-18, 2018-19, and 2019-20. The last season was cut short because of the pandemic, but the majority of the games were played - so the predictor statistics are still available for players. 
+
+Third, it's possible that salary is a lagging indicator of a player's skill level. If the player's skill level is accurately represented by the metrics we have chosen as our predictor variables, it's possible that as a player ages and declines in quality, they are still overpaid to an extent, because their contracts were written earlier, when they were younger and had better statistics. Our report doesn't explore this possiblity of linking a player's statistics in a given season to their salary in a later season, but it's a common sense possiblity that could be a confounding factor in our search for a good model.
+
+## Interest
+
+Our interest in this data comes from having a fan of basketball in the group, also interested in the business side of the game. Some of the questions that inspired this analysis (even though not all of them may be answered within this one project) are: Are certain players overrated because of their personalities or perceptions, which causes them to be overpaid relative to their statistics? Are certain positions (roles within the basektball team) systematically over- or under-paid relative to other positions? Are certain metrics more important in determining a player's salary than others, and, if so, how do these metrics align with which metrics are generally well-regarded/considered important by the fans and sports media?
+
+# Methods
+
+First, we load up the data:
+```{r message=FALSE, warning=FALSE}
+library(readr)
+nba_raw = read_csv("data.csv")
+```
+
+## Exploration
+
+Initially, the data needs some cleanup. We're going to remove any data where the player metrics are not available, instead of attempting to impute something like 19 different metrics across 200 or more observations. Then, we're going to make a more controversial decision - removing the data for which salaries are $0. This will make the models we train weak at identifying what characterizes an NBA player who would get paid a low amount, but it will allow us to do a log transformation on the response. It makes us a bit more comfortable that there are relatively few of these data points (less than 1% of the dataset), and we're not really very interested in the contractual sorts of maneuvering that allows NBA teams to sign players without actually having to pay them anything.
+```{r}
+nba = subset(nba_raw, select = -c(Guaranteed, `Signed Using`, Player))
+nba = na.omit(nba)
+nba$Tm = as.factor(nba$Tm)
+nba$Pos = as.factor(nba$Pos)
+nba = subset(nba, subset = nba$Salary != 0)
+
+test_idx = sample(nrow(nba), size = 100)
+test_set = nba[test_idx, ]
+nba = nba[-test_idx, ]
+
+n = nrow(nba)
+
+nba_numeric = subset(nba, select = -c(Tm, Pos))
+nba_predictors = subset(nba_numeric, select = -c(Salary))
+```
+
+When we examine the correlations between the response `Salary` and the available numeric predictors, we see the following:
+```{r}
+cor(nba_predictors, y = nba$Salary, use = "complete.obs")
+```
+
+None of these values are particularly high. However, `VORP`, `OWS` and `WS` jump out as the predictors with the highest correlations with the predictors. We can use these to begin our model-building, but we have to keep in mind that these variables may not be present in any "better" models because of interactions with other predictors that this correlation array does not indicate.
+
+Next, let's look at some pairwise plots of particularly salient/high-correlation variables and examine what we can see:
+```{r}
+pairwise_plot_data = subset(nba, select = c(Salary, Age, VORP, OWS, WS, MP))
+plot(pairwise_plot_data, col = "dodgerblue")
+```
+
+There's strong evidence of collinearity here - we can see that `VORP`, `WS`, and `OWS` all look to be collinear with one another. 
+
+When it comes to our response `Salary`, it's sort of all over the place - there's no strong, obvious linear trend with anything. This matches our correlation values we saw earlier - none of them were particularly high. 
+
+It looks like there's some indications of a logarithmic relationship with `Salary`, though - in several cases, we can see that there's a lot more data towards the lower end of the salary range, and more sparse data towards the higher end of salaries.
+
+## Model Building
+
+Defining some helper functions to extract relevant data from our models:
+```{r}
+rmse = function(model) { 
+  sqrt(mean(model$residuals ^ 2)) 
+}
+
+log_rmse = function(model) { 
+  resid = nba$Salary - exp(fitted(model))
+  sqrt(mean(resid ^ 2)) 
+}
+
+test_rmse = function(model) {
+  predicted = predict(model, newdata = test_set)
+  n = nrow(test_set)
+  resid = predicted - test_set$Salary
+  sqrt(mean(resid ^ 2))
+}
+
+test_log_rmse = function(model) {
+  predicted = predict(model, newdata = test_set)
+  n = nrow(test_set)
+  resid = exp(predicted) - test_set$Salary
+  sqrt(mean(resid ^ 2))
+}
+
+info = function(model) {
+  c(
+    "R squared" = summary(model)$"r.squared", 
+    "RMSE" = rmse(model),
+    "Parameters" = extractAIC(model)[1],
+    "AIC" = extractAIC(model)[2], 
+    "Test RMSE" = test_rmse(model)
+  )
+}
+
+log_info = function(model) {
+  c(
+    "R-squared" = summary(model)$"r.squared", 
+    "RMSE" = log_rmse(model),
+    "Parameters" = extractAIC(model)[1],
+    "AIC" = extractAIC(model)[2], 
+    "Test RMSE" = test_log_rmse(model)
+  )
+}
+```
+
+Let's first look at the simplest model - the additive model of all the predictors:
+```{r}
+full_model = lm(Salary ~ ., data = nba)
+info(full_model)
+```
+Now we have a baseline for what could constitute a "better" or "worse" model than our first attempt. Let's consider an additive model of the highly-correlated predictors we saw during our exploration:
+```{r}
+correlated_predictors_model = lm(Salary ~ Age + VORP + WS + MP + OWS, data = nba)
+info(correlated_predictors_model)
+```
+This model is worse in many respects - a lower R-squared, a higher test RMSE. It does, however, have far fewer parameters (6 vs 65). Next, let's look at pairwise interactions between these highly-correlated predictors:
+```{r}
+correlated_predictors_interactions_model = lm(Salary ~ (Age + VORP + WS + MP + OWS) ^ 2, data = nba)
+info(correlated_predictors_interactions_model)
+```
+This is better than the previous model, but not by a whole lot. It has a higher R-squared, lower tet RMSE, and slightly lower AIC, but it still doesn't match up to our full model. Next, let's move on to trying to prune down the full model using AIC to search possible models:
+```{r}
+selected_aic_model = step(full_model, direction = "backward", trace = 0)
+info(selected_aic_model)
+```
+This model is less than half the size of the full model, but has a similar R-squared and test RMSE (though both are slightly worse than the full model). It also has a lower AIC. This is somewhat promising, but it may be possible to go even smaller by using BIC to search possible models, since BIC imposes a larger penalty for additional parameters:
+```{r}
+selected_bic_model = step(full_model, direction = "backward", trace = 0, k = log(n))
+info(selected_bic_model)
+```
+This does yield a smaller model, but in other respects it is similar to the AIC-selected model above - but slightly worse in terms of R-squared, test RMSE, and AIC. To continue exploring, let's use a large model, one with every two-way interaction between all 65 predictors:
+```{r}
+int_model = lm(Salary ~ . ^ 2, data = nba)
+info(int_model)
+```
+Now this model is extremely large - it has 1230 parameters. However, as we'd expect, it also has a large R-squared and a much lower RMSE than any other model we've examined previously. However, it's clear from our test RMSE that this model is massively overfitting, so let's not continue down this road. Next, let's try to take the log of the response of the best model we've seen so far (the BIC-selected one), since we noticed that salary seems to be distributed across a large range of orders of magnitude, and the distribution is much denser at lower salaries than at higher ones:
+```{r}
+log_selected_bic_model = lm(log(Salary) ~ Age + G + MP + `DRB%` + `USG%` + VORP, data = nba)
+log_info(log_selected_bic_model)
+```
+Interestingly, this model looks worse than the BIC-selected model we were examining before. It has a higher test RMSE and a slightly lower R-squared. It also has a much lower AIC, but it's important to note that we shouldn't compare AICs to models that don't have a transformation of the response. Let's confirm that a log transformation would degrade even our original full model - if it does, we can stop going down this path.
+```{r}
+log_full_model = lm(log(Salary) ~ ., data = nba)
+log_info(log_full_model)
+```
+Indeed it does make our full model worse - let's stop trying to apply log transformations now. 
+
+So far, based on all the models we have examined, the best one has been the model chosen by AIC, followed by the model chosen by BIC - they're similar, but BIC yields both a smaller and (slightly) worse model in terms of the test set RMSE.
+
+# Results
+
+## AIC-selected model
+
+Let's start with the absolute best model we saw, selected from backwards AIC search:
+```{r}
+par(mfrow = c(2, 2))
+
+qqnorm(resid(selected_aic_model), col = "orange")
+qqline(resid(selected_aic_model), col = "dodgerblue")
+
+plot(
+  fitted(selected_aic_model), 
+  resid(selected_aic_model), 
+  col = "dodgerblue", 
+  pch = 20,
+  xlab = "Fitted", 
+  ylab = "Residual",
+  main = "Fitted versus Residuals"
+)
+abline(h = 0, col = "darkorange", lwd = 2)
+
+hist(
+  resid(selected_aic_model),
+  main = "Histogram of Residuals",
+  col = "dodgerblue",
+  lwd = 2
+)
+```
+
+From these plots, we can see a couple things. First of all, the normality and equal variance assumptions are clearly violated. The Normal Q-Q plot begins to deviate from the line around 1 quantile above the mean, and the Fitted vs Residuals plot shows a clear trend where the salaries of NBA players are capped at the lower end (at $0). It also shows a trend that larger fitted values tend to have smaller residuals. The histogram of residuals looks somewhat right-skewed as well.
+
+```{r}
+shapiro.test(resid(selected_aic_model))
+```
+
+This test result just confirms for us the problems with the normality assumption.
+
+## BIC-selected model
+
+Let's compare this to the second-best model we saw, the model chosen by backwards BIC:
+```{r}
+par(mfrow = c(2, 2))
+
+qqnorm(resid(selected_bic_model), col = "orange")
+qqline(resid(selected_bic_model), col = "dodgerblue")
+
+plot(
+  fitted(selected_bic_model), 
+  resid(selected_bic_model), 
+  col = "grey", 
+  pch = 20,
+  xlab = "Fitted", 
+  ylab = "Residual",
+  main = "Fitted versus Residuals"
+)
+abline(h = 0, col = "darkorange", lwd = 2)
+
+hist(
+  resid(selected_bic_model),
+  main = "Histogram of Residuals",
+  col = "dodgerblue",
+  lwd = 2
+)
+```
+
+These diagnostic plots look somewhat better than the previous ones, but not by much. There seems to be more of a equal variance across different fitted values in the Fitted vs Residuals plot, and the Normal Q-Q plot doesn't deviate as far from the line (although it starts deviating around the same place). The histogram of residuals also looks more close to being normally distributed.
+
+```{r}
+shapiro.test(resid(selected_bic_model))
+```
+
+The Shapiro-Wilks test result, however, is just as bad as the previous model's.
+
+## Further Comparisons
+
+Finally, let's compare this to one of the models we discarded earlier - the model where the response is transformed by a log:
+```{r}
+par(mfrow = c(2, 2))
+
+qqnorm(resid(log_selected_bic_model), col = "orange")
+qqline(resid(log_selected_bic_model), col = "dodgerblue")
+
+plot(
+  fitted(log_selected_bic_model), 
+  resid(log_selected_bic_model), 
+  col = "grey", 
+  pch = 20,
+  xlab = "Fitted", 
+  ylab = "Residual",
+  main = "Fitted versus Residuals"
+)
+abline(h = 0, col = "darkorange", lwd = 2)
+
+hist(
+  resid(log_selected_bic_model),
+  main = "Histogram of Residuals",
+  col = "dodgerblue",
+  lwd = 2
+)
+```
+
+These plots tell a much different story - the Normal Q-Q plot deviates at the lower theoretical quantiles rather than the higher ones, but does seem to deviate about the same amount. The Fitted vs Residuals plot also looks like it has fairly good equal variance, until it hits the minimum bar of a negative salary.
+
+```{r}
+shapiro.test(resid(log_selected_bic_model))
+```
+
+And, as before, the Shapiro-Wilk test is a failure, confirming our interpretation of the Q-Q plot.
+
+# Discussion
+
+Judging by a combination of the diagnostic plots and the errors produced, the "best" model is probably the model chosen by backwards BIC. It's small (with only 7 parameters), and each of the parameters by themselves is highly significant. The small size means it is highly interpretable, and the lack of any interactions, or any transformations, for that matter, means that it is straightforward and easy to understand.
+
+```{r}
+summary(selected_bic_model)
+```
+
+In the context of the data, the final model describes the prediction of an NBA player's salary thus: it is a straightforward combination of that player's age, the number of games they played, the number of minutes they play on average per game, and three advanced statistics: the player's defensive rebound percentage, the player's usage (how often the player gets to touch the ball/participate in the action while they're playing), and the player's value over a replacement player (a measure of how much better that player is over a theoretical "average" player). The simplicity of this model is remarkable - it doesn't rely on very many of the advanced stats at all! Of the 19 available, only 3 were used. In contrast, a much higher proportion of the "basic" stats (like games played, minutes per game, etc) were used.
+
+# Appendix
+
+### Citations:
+
+All data for this project was downloaded from [basketball-reference](https://www.basketball-reference.com/).
+
+The initial dataset (which we appended with subsequent seasons) was found [on kaggle](https://www.kaggle.com/meicher/201718-advanced-player-metrics-salary), and served as the inspiration for the project. It was appended with additional data points from the above site to bring the total number of observations higher.
+
+Salary data was also downloaded from ESPN's [historical NBA salary database](http://www.espn.com/nba/salaries).
+
+### Authors:
+
+- Chaaru Dingankar
+- Hoa Le
+- Sreyashi Das
